@@ -5,7 +5,8 @@ use std::{
 
 use axum::{
     extract::{Path, State},
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Redirect},
     routing::{get, post},
     Json, Router,
 };
@@ -20,7 +21,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/shorten", post(shorten_url))
-        .route("/goto/{short_path}", get(serve_original_url))
+        .route("/goto/{short_path}", get(redirect))
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
@@ -31,19 +32,43 @@ async fn main() {
 }
 
 async fn shorten_url(
-    Json(payload): Json<UrlPayload>,
     State(shared_map): State<SharedUrlMap>,
+    Json(payload): Json<UrlPayload>,
 ) -> impl IntoResponse {
     let payload = payload.original_url;
+    let digest: [u8; 16] = md5::compute(&payload).into();
+    let u128_md5 = u128::from_be_bytes(digest);
+    let b62_encoded = base62::encode(u128_md5);
+    let trim_hash = String::from(&b62_encoded[0..4]);
+    let short_url = format!("http://127.0.0.1:3000/goto/{}", trim_hash);
 
-    todo!(); // shorten_url and store it in hash_map, return shortened url as json
+    shared_map
+        .map
+        .lock()
+        .unwrap()
+        .insert(trim_hash.clone(), payload);
+
+    (
+        StatusCode::OK,
+        Json(ShortenResponse {
+            shorten_url: short_url,
+        }),
+    )
 }
 
-async fn serve_original_url(
-    Path(short_url): Path<String>,
+async fn redirect(
     State(shared_map): State<SharedUrlMap>,
+    Path(short_url): Path<String>,
 ) -> impl IntoResponse {
-    todo!();
+    if let Some(url) = shared_map.map.lock().unwrap().get(&short_url) {
+        Redirect::temporary(url).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            "No redirects found for this shortened URL",
+        )
+            .into_response()
+    }
 }
 
 #[derive(Clone)]
