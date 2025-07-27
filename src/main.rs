@@ -4,9 +4,9 @@ use std::{
 };
 
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
-    response::{IntoResponse, Redirect},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -20,8 +20,8 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/shorten", post(shorten_url))
-        .route("/goto/{short_path}", get(redirect))
+        .route("/shorten", get(shorten_url))
+        .route("/redirect", get(redirect))
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
@@ -35,18 +35,18 @@ async fn shorten_url(
     State(shared_map): State<SharedUrlMap>,
     Json(payload): Json<UrlPayload>,
 ) -> impl IntoResponse {
-    let payload = payload.original_url;
+    let payload = payload.url;
     let digest: [u8; 16] = md5::compute(&payload).into();
     let u128_md5 = u128::from_be_bytes(digest);
     let b62_encoded = base62::encode(u128_md5);
     let trim_hash = String::from(&b62_encoded[0..4]);
-    let short_url = format!("http://127.0.0.1:3000/goto/{}", trim_hash);
+    let short_url = format!("short.url/{trim_hash}");
 
     shared_map
         .map
         .lock()
         .unwrap()
-        .insert(trim_hash.clone(), payload);
+        .insert(short_url.clone(), payload);
 
     (
         StatusCode::OK,
@@ -58,10 +58,13 @@ async fn shorten_url(
 
 async fn redirect(
     State(shared_map): State<SharedUrlMap>,
-    Path(short_url): Path<String>,
+    Json(short_path): Json<UrlPayload>,
 ) -> impl IntoResponse {
-    if let Some(url) = shared_map.map.lock().unwrap().get(&short_url) {
-        Redirect::temporary(url).into_response()
+    if let Some(url) = shared_map.map.lock().unwrap().get(&short_path.url) {
+        Json(UrlPayload {
+            url: url.to_owned(),
+        })
+        .into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
@@ -76,9 +79,9 @@ struct SharedUrlMap {
     map: Arc<Mutex<HashMap<String, String>>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct UrlPayload {
-    original_url: String,
+    url: String,
 }
 
 #[derive(Serialize)]
